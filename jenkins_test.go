@@ -8,7 +8,7 @@ import (
 
 func NewJenkinsWithTestData() *Jenkins {
 	var auth Auth
-	return NewJenkins(&auth, "http://example.com")
+	return NewJenkins(&auth, "http://example.com", false)
 }
 
 func Test(t *testing.T) {

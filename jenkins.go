@@ -8,8 +8,10 @@ import (
 	"fmt"
 	"io"
 	"io/ioutil"
+	"log"
 	"net/http"
 	"net/url"
+	"strings"
 )
 
 type Auth struct {
@@ -18,16 +20,18 @@ type Auth struct {
 }
 
 type Jenkins struct {
-	auth    *Auth
-	baseUrl string
-	client  *http.Client
+	auth     *Auth
+	baseUrl  string
+	useCrumb bool
+	client   *http.Client
 }
 
-func NewJenkins(auth *Auth, baseUrl string) *Jenkins {
+func NewJenkins(auth *Auth, baseUrl string, useCrumb bool) *Jenkins {
 	return &Jenkins{
-		auth:    auth,
-		baseUrl: baseUrl,
-		client:  http.DefaultClient,
+		auth:     auth,
+		baseUrl:  baseUrl,
+		useCrumb: useCrumb,
+		client:   http.DefaultClient,
 	}
 }
 
@@ -85,8 +89,44 @@ func (jenkins *Jenkins) parseResponse(resp *http.Response, body interface{}) (er
 	return json.Unmarshal(data, body)
 }
 
+func (jenkins *Jenkins) addCrumb(params *url.Values) {
+	crumbParams := url.Values{}
+	crumbParams.Add("xpath", "concat(//crumbRequestField,\":\",//crumb)")
+
+	crumbUrl := jenkins.buildUrl("/crumbIssuer/api/xml", crumbParams)
+
+	log.Println(crumbUrl)
+
+	req, crumbErr := http.NewRequest("GET", crumbUrl, nil)
+	if crumbErr != nil {
+		return
+	}
+
+	resp, crumbErr := jenkins.sendRequest(req)
+	if crumbErr != nil {
+		return
+	}
+
+	log.Println(resp)
+
+	defer resp.Body.Close()
+
+	bodyBytes, crumbErr := ioutil.ReadAll(resp.Body)
+	if crumbErr != nil {
+		return
+	}
+
+	bodyString := string(bodyBytes)
+
+	var crumbResp = strings.Split(bodyString, ":")
+
+	params.Add(crumbResp[0], crumbResp[1])
+}
+
 func (jenkins *Jenkins) get(path string, params url.Values, body interface{}) (err error) {
+
 	requestUrl := jenkins.buildUrl(path, params)
+
 	req, err := http.NewRequest("GET", requestUrl, nil)
 	if err != nil {
 		return
@@ -114,8 +154,18 @@ func (jenkins *Jenkins) getXml(path string, params url.Values, body interface{})
 }
 
 func (jenkins *Jenkins) post(path string, params url.Values, body interface{}) (err error) {
+
+	if jenkins.useCrumb {
+		jenkins.addCrumb(&params)
+	}
+
 	requestUrl := jenkins.buildUrl(path, params)
 	req, err := http.NewRequest("POST", requestUrl, nil)
+
+	if jenkins.useCrumb {
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	}
+
 	if err != nil {
 		return
 	}
@@ -221,7 +271,7 @@ func (jenkins *Jenkins) CreateView(listView ListView) error {
 // Create a new build for this job.
 // Params can be nil.
 func (jenkins *Jenkins) Build(job Job, params url.Values) error {
-	if hasParams(job) {
+	if len(params) > 0 {
 		return jenkins.post(fmt.Sprintf("/job/%s/buildWithParameters", job.Name), params, nil)
 	} else {
 		return jenkins.post(fmt.Sprintf("/job/%s/build", job.Name), params, nil)
